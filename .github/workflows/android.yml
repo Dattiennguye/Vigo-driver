@@ -1,0 +1,169 @@
+name: Build VIGO Driver Log APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unit test + build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Chuẩn bị khóa ký Release
+        id: sign
+        env:
+          KEYSTORE_B64: ${{ secrets.VIGO_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.VIGO_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.VIGO_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.VIGO_KEY_ALIAS }}
+        run: |
+          KS="$RUNNER_TEMP/release.jks"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            echo "VIGO_KEYSTORE_PASSWORD=$KS_PASS" >> $GITHUB_ENV
+            echo "VIGO_KEY_PASSWORD=$KEY_PASS" >> $GITHUB_ENV
+            echo "VIGO_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "mode=stable" >> $GITHUB_OUTPUT
+          else
+            # Chưa cấu hình Secrets: tạo khóa tạm để APK Release vẫn cài được.
+            PW=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$KS" -alias temp -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PW" -keypass "$PW" -dname "CN=VIGO Driver Log (temporary), C=VN" -noprompt
+            echo "::add-mask::$PW"
+            echo "VIGO_KEYSTORE_PASSWORD=$PW" >> $GITHUB_ENV
+            echo "VIGO_KEY_PASSWORD=$PW" >> $GITHUB_ENV
+            echo "VIGO_KEY_ALIAS=temp" >> $GITHUB_ENV
+            echo "mode=temporary" >> $GITHUB_OUTPUT
+          fi
+          echo "VIGO_KEYSTORE_PATH=$KS" >> $GITHUB_ENV
+          echo "VIGO_VERSION_CODE=${{ github.run_number }}" >> $GITHUB_ENV
+
+      - name: Unit test
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build APK Debug + Release
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+
+      - name: Đổi tên APK
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/VIGO-DriverLog-1.0.0-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk out/VIGO-DriverLog-1.0.0-release.apk
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VIGO-DriverLog-apk
+          path: out/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/
+
+      - name: Phát hành APK lên GitHub Releases
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-build.${{ github.run_number }}
+          name: VIGO Driver Log 1.0.0 (build ${{ github.run_number }})
+          make_latest: true
+          files: out/*.apk
+          body: |
+            Bản build tự động từ commit ${{ github.sha }}.
+            - **VIGO-DriverLog-1.0.0-release.apk** – cài đặt sử dụng thực tế.
+            - **VIGO-DriverLog-1.0.0-debug.apk** – bản kiểm thử (cài song song, dữ liệu riêng).
+            Khóa ký Release: **${{ steps.sign.outputs.mode == 'stable' && 'ổn định (từ Secrets)' || 'TẠM THỜI – hãy cấu hình Secrets trước khi phát hành chính thức (xem docs/HUONG_DAN_CAI_DAT.md)' }}**
+
+  device-test:
+    name: Kiểm thử trên Android emulator
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Bật KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build test APK
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+
+      - name: Chạy instrumented test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: |
+            adb shell settings put secure location_mode 3 || true
+            adb emu geo fix 105.8542 21.0285 || true
+            (for i in $(seq 1 60); do adb emu geo fix 105.8542 21.0285 >/dev/null 2>&1; sleep 3; done) &
+            mkdir -p ci-report
+            ./gradlew --no-daemon connectedDebugAndroidTest || touch ci-report/TESTS_FAILED
+            adb pull /sdcard/Pictures/VIGO-CI ci-report/ || true
+            adb pull "/sdcard/Pictures/VIGO Driver Log" ci-report/ || true
+            adb logcat -d -s VigoTest:I > ci-report/vigotest-log.txt || true
+            test ! -f ci-report/TESTS_FAILED
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: device-test-output
+          path: |
+            ci-report/
+            app/build/reports/androidTests/
+
+      - name: Đóng gói ảnh báo cáo kiểm thử
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          mkdir -p dist
+          find ci-report -name '*.png' -exec cp {} dist/ \; || true
+          find ci-report -name '*.txt' -exec cp {} dist/ \; || true
+          (cd app/build/reports/androidTests && zip -qr ../../../../dist/android-test-report.zip .) || true
+          ls -la dist
+
+      - name: Đăng kết quả kiểm thử
+        if: always() && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-test-output
+          name: Kết quả kiểm thử thiết bị (mới nhất)
+          prerelease: true
+          make_latest: false
+          files: dist/*
+          body: Ảnh báo cáo do instrumented test tạo trên emulator (dữ liệu kiểm thử) và báo cáo JUnit. Cập nhật mỗi lần build.
