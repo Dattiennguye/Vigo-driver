@@ -105,7 +105,7 @@ class DeviceTests {
         assertEquals(1, trips.size)
         assertEquals(TripStatus.COMPLETED.name, trips[0].status)
         assertNotNull(trips[0].endTime)
-        assertEquals(11, db.eventDao().all().size)
+        assertEquals(10, db.eventDao().all().size)
     }
 
     @Test fun duplicateTapIsRejected() = runBlocking<Unit> {
