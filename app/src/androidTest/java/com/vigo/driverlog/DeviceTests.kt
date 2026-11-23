@@ -76,7 +76,7 @@ class DeviceTests {
             repo.record(type, TapMoment(clock, elapsed), gps(lat, lng), profile, note)
         }
 
-    @Test fun fullTripFlowAndRules() = runBlocking {
+    @Test fun fullTripFlowAndRules() = runBlocking<Unit> {
         assertEquals(TripPhase.NOT_STARTED, repo.currentPhase())
         try { rec(EventType.ARRIVE, 1); fail("ARRIVE trước START phải bị chặn") } catch (e: RecordRejected) {}
 
@@ -108,7 +108,7 @@ class DeviceTests {
         assertEquals(11, db.eventDao().all().size)
     }
 
-    @Test fun duplicateTapIsRejected() = runBlocking {
+    @Test fun duplicateTapIsRejected() = runBlocking<Unit> {
         rec(EventType.START_TRIP, 1)
         rec(EventType.QUICK_LOG, 1)
         // bấm lại sau 1 giây
@@ -120,7 +120,7 @@ class DeviceTests {
         assertEquals(2, db.eventDao().all().size)
     }
 
-    @Test fun manualLocationIsFlagged() = runBlocking {
+    @Test fun manualLocationIsFlagged() = runBlocking<Unit> {
         clock += 60_000; elapsed += 60_000
         val e = repo.record(EventType.START_TRIP, TapMoment(clock, elapsed), CapturedLocation.Manual("Kho Long Biên"), profile)
         assertEquals(LocationSource.MANUAL.name, e.locationSource)
@@ -128,7 +128,7 @@ class DeviceTests {
         assertEquals("Kho Long Biên", e.address)
     }
 
-    @Test fun clockDriftIsWarned() = runBlocking {
+    @Test fun clockDriftIsWarned() = runBlocking<Unit> {
         clock += 60_000; elapsed += 60_000
         // Giờ vị trí chậm hơn giờ máy 10 phút → phải có cảnh báo
         val fix = Fix(21.0, 105.8, 5f, clock - 10 * 60_000, elapsed, false)
@@ -136,7 +136,7 @@ class DeviceTests {
         assertNotNull(e.clockWarning)
     }
 
-    @Test fun editsAreLoggedAndOriginalsKept() = runBlocking {
+    @Test fun editsAreLoggedAndOriginalsKept() = runBlocking<Unit> {
         val e = rec(EventType.START_TRIP, 1)
         repo.correctAddress(e.id, "Số 1 Tràng Tiền, Hoàn Kiếm, Hà Nội", "GPS lệch")
         val after = db.eventDao().getById(e.id)!!
@@ -146,7 +146,7 @@ class DeviceTests {
         assertEquals("address", db.editLogDao().all()[0].fieldName)
     }
 
-    @Test fun dataSurvivesReopen() = runBlocking {
+    @Test fun dataSurvivesReopen() = runBlocking<Unit> {
         val name = "persist-test.db"
         ctx.deleteDatabase(name)
         val d1 = Room.databaseBuilder(ctx, AppDatabase::class.java, name).build()
@@ -160,7 +160,7 @@ class DeviceTests {
         d2.close(); ctx.deleteDatabase(name)
     }
 
-    @Test fun staleTripMarkedIncompleteWithoutFakeEnd() = runBlocking {
+    @Test fun staleTripMarkedIncompleteWithoutFakeEnd() = runBlocking<Unit> {
         rec(EventType.START_TRIP, 1)
         val t = db.tripDao().getActive()!!
         repo.markIncomplete(t.tripId)
@@ -170,7 +170,7 @@ class DeviceTests {
         assertEquals(TripPhase.NOT_STARTED, repo.currentPhase())
     }
 
-    @Test fun backupRoundTripIsIdempotent() = runBlocking {
+    @Test fun backupRoundTripIsIdempotent() = runBlocking<Unit> {
         rec(EventType.START_TRIP, 1); rec(EventType.ARRIVE, 10); rec(EventType.END_TRIP, 10)
         val out = ByteArrayOutputStream()
         BackupManager(db).exportJson(out)
@@ -183,7 +183,7 @@ class DeviceTests {
         other.close()
     }
 
-    @Test fun reportRendersSavesAndPaginates() = runBlocking {
+    @Test fun reportRendersSavesAndPaginates() = runBlocking<Unit> {
         // Ngày nhiều sự kiện: 1 chuyến, 25 điểm đến, mỗi điểm đỗ xe
         rec(EventType.START_TRIP, 1, 21.0285, 105.8542)
         for (i in 1..25) {
@@ -217,7 +217,7 @@ class DeviceTests {
         assertEquals(saved.fileNames, again.fileNames)
     }
 
-    @Test fun reportSmallDayOfflineSchematic() = runBlocking {
+    @Test fun reportSmallDayOfflineSchematic() = runBlocking<Unit> {
         rec(EventType.START_TRIP, 30, 21.0285, 105.8542)
         rec(EventType.ARRIVE, 75, 21.0453, 105.7880, note = "Giao hàng cho kho XYZ")
         rec(EventType.PARK_START, 5, 21.0455, 105.7882)
@@ -239,7 +239,7 @@ class DeviceTests {
         dumpForCi("report_small_online", online)
     }
 
-    @Test fun locationServiceNeverCrashes() = runBlocking {
+    @Test fun locationServiceNeverCrashes() = runBlocking<Unit> {
         val r = LocationService(ctx).getFreshFix(timeoutMs = 15_000)
         Log.i("VigoTest", "Kết quả GPS trên emulator: $r")
         when (r) {
